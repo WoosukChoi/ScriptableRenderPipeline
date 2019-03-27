@@ -18,19 +18,18 @@ void main(uint dispatchThreadId : SV_DispatchThreadID)
     uint2 tableCoord = uint2(dispatchThreadId, 0);
 
     // We don't care about the extremal points (boundary values).
-    float coordNDC = tableCoord.x * scale + bias;
+    float uv = tableCoord.x * scale + bias;
 
     // As we look at the planet in the direction of the sun, the ground is rotationally invariant.
-    float NdotL  = 1 - 2 * coordNDC.x;
-    float height = 0;
+    float NdotL = 1 - 2 * uv.x;
 
     float4 tableEntry = float4(0, 0, 0, 1);
 
     if (NdotL > 0)
     {
-        float3 transmittance = SampleTransmittanceTable(height, NdotL);
+        float3 transmittance = SampleTransmittanceTexture(0, NdotL);
 
-        tableEntry.rgb = _SunRadiance * transmittance * saturate(NdotL);
+        tableEntry.rgb = _SunRadiance * transmittance * NdotL;
     }
 
     _GroundIrradianceTable[tableCoord] = tableEntry;

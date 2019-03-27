@@ -27,7 +27,7 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
         /* Properties below should be interpolated, but they should not be accessible via the GUI. */
 
         // Height of all the atmospheric layers starting from the sea level. Units: km.
-        public FloatParameter   atmosphericLayerHeight { get; set; }
+        public FloatParameter   atmosphericDepth { get; set; }
         // Light's properties.
         public Vector3Parameter sunRadiance            { get; set; }
         public Vector3Parameter sunDirection           { get; set; }
@@ -35,12 +35,12 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
         public void Awake()
         {
             // Allocate memory on startup.
-            atmosphericLayerHeight = new FloatParameter(0.0f);
+            atmosphericDepth = new FloatParameter(0.0f);
             sunRadiance            = new Vector3Parameter(Vector3.zero);
             sunDirection           = new Vector3Parameter(Vector3.zero);
         }
 
-        float ComputeAtmosphericLayerHeight()
+        float ComputeAtmosphericDepth()
         {
             // What's the thickness at the boundary of the outer space (units: 1/(1000 km))?
             const float outerThickness = 0.01f;
@@ -64,7 +64,7 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
         {
             Light sun = builtinParams.sunLight;
 
-            atmosphericLayerHeight.value = ComputeAtmosphericLayerHeight();
+            atmosphericDepth.value = ComputeAtmosphericDepth();
             sunRadiance.value            = new Vector3(sun.intensity * sun.color.linear.r,
                                                        sun.intensity * sun.color.linear.g,
                                                        sun.intensity * sun.color.linear.b);
@@ -83,7 +83,7 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
                 hash = hash * 23 + aerosolThickness.GetHashCode();
                 hash = hash * 23 + aerosolAlbedo.GetHashCode();
                 hash = hash * 23 + aerosolDensityFalloff.GetHashCode();
-                hash = hash * 23 + atmosphericLayerHeight.GetHashCode();
+                hash = hash * 23 + atmosphericDepth.GetHashCode();
                 hash = hash * 23 + sunRadiance.GetHashCode();
                 hash = hash * 23 + sunDirection.GetHashCode();
             }

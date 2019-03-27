@@ -70,112 +70,47 @@ void main(uint2 dispatchThreadId : SV_DispatchThreadID)
     uint2 tableCoord = dispatchThreadId;
 
     // We don't care about the extremal points (boundary values).
-    float2 coordNDC = tableCoord * scale + bias;
+    float2 uv = tableCoord * scale + bias;
 
-    // Height is the altitude.
-    // A uniform distribution results in a rather non-linear (but rather exponential) LUT.
-    // The cause is the exp(-h * F) term (and not the Chapman function, which has a pretty linear response).
-    // Unfortunately, if we drop this term, we will have to use FP32 instead of FP16.
-    // We use a quadratic remap to allocate more samples near the surface.
-    // The LUT is still highly non-linear.
-    float powY   = coordNDC.y * coordNDC.y;
-    float height = powY * _AtmosphericLayerHeight;
-
-    // Parametrization in terms of neither the angle nor the cosine results in a linear LUT.
-    // However, at least the cosine offers more resolution near the horizon,
-    // where the function changes more rapidly.
-    float cosChi = 1 - 2 * coordNDC.x;
+    float height = UnmapAerialPerspective(uv).x;
+    float cosChi = UnmapAerialPerspective(uv).y;
     float chi    = acos(cosChi);
 
-    float h = height;
     float R = _PlanetaryRadius;
+    float h = height;
     float r = R + h;
 
     float2 S = float2(_AirScaleHeight,    _AerosolScaleHeight);
     float2 F = float2(_AirDensityFalloff, _AerosolDensityFalloff);
 
-    // Ray origin is within a slice (atmosphere) between two spheres (the planet and the outer space).
-    // We need to determine the location where the ray exits the slice.
-    // The ray always intersects the outer sphere, but does not necessarily intersect the inner sphere.
-    // Therefore, if we intersect the inner sphere, we are done.
-    // We assume the outer sphere to be infinite (for simplicity).
-
-    // float2 rayOrigin    = float2(0, r);
-    // float2 rayDirection = float2(sinChi, cosChi);
+    // Now we need to compute the optical depth along the ray.
+    // It is given as the integral of the atmospheric thickness (extinction) along the ray.
     //
-    // Solve: t^2 + 2 * b * t + c = 0.
-    // float b = dot(rayOrigin, rayDirection);
-    // float c = dot(rayOrigin, rayOrigin) - R * R;
-    // float d = b * b - c;
-
-    float b = r * cosChi;
-    float d = (R * R) - (r * r) * (1 - cosChi * cosChi);
-
-    float t = -FLT_INF;
-
-    if (d >= 0)
-    {
-        // We always take the closest intersection.
-        t = -b - sqrt(d);
-    }
-
-    bool intersectsPlanet = (t >= 0);
+    // AirThickness[h]         = AirThickness[0]     * Exp[-h / airS]
+    // AerosolThickness[h]     = AerosolThickness[0] * Exp[-h / aerosolS]
+    // AtmosphericThickness[h] = AirThickness[h] + AerosolThickness[h]
+    //
+    // For now, assume that no intersection with the planet occurred.
+    //
+    // OpticalDepth = Integrate[Extinction[t], {t, 0, Infinity}]
+    // OpticalDepth = Integrate[Thickness[0] * Exp[-h[t] / S], {t, 0, Infinity}]
+    // OpticalDepth = Thickness[0] * Integrate[Exp[-h[t] / S], {t, 0, Infinity}]
+    // OpticalDepth = Thickness[0] * Integrate[Exp[(R - Sqrt[(r * Sin[chi])^2 + t^2]) / S], {t, r * Cos[chi], Infinity}]
+    // OpticalDepth = Thickness[0] * S * Exp[(R - r) / S] * Integrate[Exp[(r - Sqrt[(r * Sin[chi])^2 + t^2]) / S] / S, {t, r * Cos[chi], Infinity}]
+    // By defining (x = r / S) and (s = t / S), we get:
+    // OpticalDepth = Thickness[0] * S * Exp[(R - r) / S] * Integrate[Exp[x - Sqrt[(x * Sin[chi])^2 + s^2]], {s, x * Cos[chi], Infinity}]
+    // OpticalDepth = Thickness[0] * S * Exp[(R - r) / S] * Integrate[Exp[x - Sqrt[s^2 + 2 * s * (x * Cos[chi]) + x^2]], {s, 0, Infinity}]
+    // OpticalDepth = Thickness[0] * S * Exp[(R - r) / S] * ChapmanFunction[x, chi]
+    //
+    // For more information, see the article by Christian Schueler titled
+    // "Approximation to the Chapman Grazing-Incidence Function for Atmospheric Scattering".
+    //
+    // To save on the storage, we will scale by sea level thickness at runtime.
 
     float2 tableEntry;
 
-    if (!intersectsPlanet)
-    {
-        // Now we need to compute the optical depth along the ray.
-        // It is given as the integral of the atmospheric thickness (extinction) along the ray.
-        //
-        // AirThickness[h]         = AirThickness[0]     * Exp[-h / airH]
-        // AerosolThickness[h]     = AerosolThickness[0] * Exp[-h / aerosolH]
-        // AtmosphericThickness[h] = AirThickness[h] + AerosolThickness[h]
-        //
-        // For now, assume that no intersection with the planet occurred.
-        //
-        // OpticalDepth = Integrate[Extinction[t], {t, 0, Infinity}]
-        // OpticalDepth = Integrate[Thickness[0] * Exp[-h[t] / S], {t, 0, Infinity}]
-        // OpticalDepth = Thickness[0] * Integrate[Exp[-h[t] / S], {t, 0, Infinity}]
-        // OpticalDepth = Thickness[0] * Integrate[Exp[(R - Sqrt[(r * Sin[chi])^2 + t^2]) / S], {t, r * Cos[chi], Infinity}]
-        // OpticalDepth = Thickness[0] * S * Exp[(R - r) / S] * Integrate[Exp[(r - Sqrt[(r * Sin[chi])^2 + t^2]) / S] / S, {t, r * Cos[chi], Infinity}]
-        // By defining (x = r / S) and (s = t / S), we get:
-        // OpticalDepth = Thickness[0] * S * Exp[(R - r) / S] * Integrate[Exp[x - Sqrt[(x * Sin[chi])^2 + s^2]], {s, x * Cos[chi], Infinity}]
-        // OpticalDepth = Thickness[0] * S * Exp[(R - r) / S] * Integrate[Exp[x - Sqrt[s^2 + 2 * s * (x * Cos[chi]) + x^2]], {s, 0, Infinity}]
-        // OpticalDepth = Thickness[0] * S * Exp[(R - r) / S] * ChapmanFunction[x, chi]
-        //
-        // For more information, see the article by Christian Schueler titled
-        // "Approximation to the Chapman Grazing-Incidence Function for Atmospheric Scattering".
-        //
-        // To save on the storage, we will scale by sea level thickness at runtime.
-
-        tableEntry.x = S.x * exp(-h * F.x) * ChapmanFunction(r * F.x, chi);
-        tableEntry.y = S.y * exp(-h * F.y) * ChapmanFunction(r * F.y, chi);
-    }
-    else
-    {
-        // The Chapman function is defined as an integral to infinity.
-        // In this case, the integration range is bounded.
-        // We can still use the Chapman function by utilizing a small trick.
-        // We compute the intersection point with the planet,
-        // evaluate the Chapman function in the opposite direction twice
-        // (at the original location and at the intersection),
-        // and compute the difference.
-
-        tableEntry.x = S.x * exp(-h * F.x) * ChapmanFunction(r * F.x, PI - chi);
-        tableEntry.y = S.y * exp(-h * F.y) * ChapmanFunction(r * F.y, PI - chi);
-
-        // We must determine the new angle of the Chapman function.
-        // Using the Law of Sines (and remembering that the angle is obtuse),
-        // sin(Pi - gamma) = c / b * sin(beta)
-        // sin(Pi - gamma) = r / R * sin(Pi - chi)
-
-        float rcpR  = _RcpPlanetaryRadius;
-        float gamma = asin(r * rcpR * sin(PI - chi));
-
-        tableEntry.x = S.x * ChapmanFunction(R * F.x, gamma) - tableEntry.x;
-        tableEntry.y = S.y * ChapmanFunction(R * F.y, gamma) - tableEntry.y;
-    }
+    tableEntry.x = S.x * exp(-h * F.x) * ChapmanFunction(r * F.x, chi);
+    tableEntry.y = S.y * exp(-h * F.y) * ChapmanFunction(r * F.y, chi);
 
     _OpticalDepthTable[tableCoord] = tableEntry;
 }
